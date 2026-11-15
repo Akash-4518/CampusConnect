@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CampusConnect | Placement Portal</title><link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="toast" class="toast"></div>
+  <section id="authView" class="auth-shell">
+    <div class="auth-brand">
+      <div class="brand-mark">CC</div><p class="eyebrow">CAMPUS PLACEMENT PORTAL</p>
+      <h1>Connect talent<br><span>with opportunity.</span></h1>
+      <p class="muted light">A unified campus recruitment workspace for students, recruiters and placement teams.</p>
+      <div class="auth-points"><span>✓ Job discovery</span><span>✓ Application tracking</span><span>✓ Placement coordination</span></div>
+    </div>
+    <div class="auth-panel">
+      <div class="auth-tabs"><button class="tab active" data-auth="login">Sign in</button><button class="tab" data-auth="register">Create student account</button></div>
+      <form id="loginForm" class="auth-form">
+        <p class="eyebrow">WELCOME BACK</p><h2>Sign in to CampusConnect</h2>
+        <label>Email address<input name="email" type="email" placeholder="you@college.edu" required></label>
+        <label>Password<input name="password" type="password" placeholder="Enter password" required></label>
+        <button class="btn primary full">Sign in</button>
+      </form>
+      <form id="registerForm" class="auth-form hidden">
+        <p class="eyebrow">GET STARTED</p><h2>Create student account</h2>
+        <label>Full name<input name="name" required placeholder="Your full name"></label>
+        <label>Email address<input name="email" type="email" required placeholder="you@college.edu"></label>
+        <label>Password<input name="password" type="password" minlength="8" required placeholder="At least 8 characters"></label>
+        <button class="btn primary full">Create account</button>
+        <p class="tiny muted">New self-registrations are created as Student accounts.</p>
+      </form>
+      <div class="demo-box"><strong>Demo accounts</strong><span>Student: student@campusconnect.demo / Student@123</span><span>Recruiter: recruiter@campusconnect.demo / Recruiter@123</span><span>Admin: admin@campusconnect.demo / Admin@123</span></div>
+    </div>
+  </section>
+
+  <div id="appView" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark small">CC</div><div><strong>CampusConnect</strong><small>Placement portal</small></div></div>
+      <div class="side-label">WORKSPACE</div><nav id="nav"></nav>
+      <div class="side-bottom"><div class="avatar" id="avatar">U</div><div class="user-mini"><strong id="sideName">User</strong><small id="sideRole">Role</small></div><button id="logoutBtn" class="logout" title="Sign out">↗</button></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div><p class="eyebrow" id="pageEyebrow">WORKSPACE</p><h1 id="pageTitle">Dashboard</h1></div><div class="top-right"><span class="status-dot"></span><span id="topUser">User</span></div></header>
+      <div id="content" class="content"></div>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body></html>
