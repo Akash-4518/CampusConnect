@@ -6,6 +6,7 @@ const Database = require("better-sqlite3");
 const path = require("path");
 
 const app = express();
+// Hosted platforms such as Render run behind a reverse proxy.
 app.set("trust proxy", 1);
 const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(__dirname, "campusconnect.db");
@@ -21,6 +22,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('student','recruiter','admin')),
+  is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS student_profiles (
@@ -76,6 +78,10 @@ CREATE TABLE IF NOT EXISTS drives (
 );
 `);
 
+// Migrate databases created by earlier versions.
+const userColumns = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+if (!userColumns.includes("is_active")) db.exec("ALTER TABLE users ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1");
+
 const count = db.prepare("SELECT COUNT(*) AS n FROM users").get().n;
 if (count === 0) {
   const insertUser = db.prepare("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)");
@@ -94,6 +100,19 @@ if (count === 0) {
     .run("Graduate Engineer Recruitment Drive","TechNova Solutions","2027-03-20","CSE Seminar Hall","On Campus","Bring updated resume and college ID.",adminId);
 }
 
+// Bootstrap an administrator on an existing database that has users but no admin.
+// Configure ADMIN_EMAIL and ADMIN_PASSWORD in the hosting environment (Render).
+const existingAdmin = db.prepare("SELECT id FROM users WHERE role='admin' LIMIT 1").get();
+if (!existingAdmin && process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD.length >= 12) {
+  const adminEmail=clean(process.env.ADMIN_EMAIL).toLowerCase();
+  if (validEmail(adminEmail)) {
+    const existingAccount=db.prepare("SELECT id FROM users WHERE email=?").get(adminEmail);
+    if (!existingAccount) db.prepare("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,'admin')")
+      .run(clean(process.env.ADMIN_NAME)||"Placement Administrator",adminEmail,bcrypt.hashSync(process.env.ADMIN_PASSWORD,10));
+    else db.prepare("UPDATE users SET role='admin',is_active=1 WHERE id=?").run(existingAccount.id);
+  }
+}
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true }));
@@ -107,9 +126,16 @@ app.use(session({
 app.use(express.static(path.join(__dirname, "public")));
 
 const safeUser = u => ({ id:u.id, name:u.name, email:u.email, role:u.role });
-const requireAuth = (req,res,next) => req.session.user ? next() : res.status(401).json({error:"Please sign in first."});
+const activeSession = (req,res) => {
+  if (!req.session.user) return false;
+  const current=db.prepare("SELECT is_active,role FROM users WHERE id=?").get(req.session.user.id);
+  if (!current || !current.is_active) { req.session.destroy(()=>{}); res.status(401).json({error:"Your account is inactive. Please contact the placement administrator."}); return false; }
+  req.session.user.role=current.role;
+  return true;
+};
+const requireAuth = (req,res,next) => activeSession(req,res) ? next() : (!res.headersSent && res.status(401).json({error:"Please sign in first."}));
 const requireRole = (...roles) => (req,res,next) => {
-  if (!req.session.user) return res.status(401).json({error:"Please sign in first."});
+  if (!activeSession(req,res)) return res.headersSent ? undefined : res.status(401).json({error:"Please sign in first."});
   if (!roles.includes(req.session.user.role)) return res.status(403).json({error:"You do not have permission for this action."});
   next();
 };
@@ -130,7 +156,7 @@ app.post("/api/register", (req,res) => {
       .run(name,email,bcrypt.hashSync(password,10));
     db.prepare("INSERT INTO student_profiles(user_id) VALUES(?)").run(info.lastInsertRowid);
     const user=safeUser(db.prepare("SELECT * FROM users WHERE id=?").get(info.lastInsertRowid));
-    req.session.user=user; res.status(201).json({user});
+    req.session.user=user; req.session.save(err => { if (err) return res.status(500).json({error:"Could not save your login session. Please try again."}); res.status(201).json({user}); });
   } catch(e) { res.status(409).json({error:"An account with this email already exists."}); }
 });
 
@@ -138,7 +164,9 @@ app.post("/api/login", (req,res) => {
   const email=clean(req.body.email).toLowerCase(), password=String(req.body.password||"");
   const user=db.prepare("SELECT * FROM users WHERE email=?").get(email);
   if (!user || !bcrypt.compareSync(password,user.password_hash)) return res.status(401).json({error:"Incorrect email or password."});
-  req.session.user=safeUser(user); res.json({user:req.session.user});
+  if (!user.is_active) return res.status(403).json({error:"This account has been deactivated. Contact the placement administrator."});
+  req.session.user=safeUser(user);
+  req.session.save(err => { if (err) return res.status(500).json({error:"Could not save your login session. Please try again."}); res.json({user:req.session.user}); });
 });
 app.post("/api/logout", (req,res) => req.session.destroy(()=>res.json({ok:true})));
 
@@ -239,8 +267,41 @@ app.patch("/api/admin/jobs/:id", requireRole("admin"), (req,res) => {
   res.json({ok:true});
 });
 app.get("/api/admin/users", requireRole("admin"), (req,res) => {
-  const users=db.prepare("SELECT id,name,email,role,created_at FROM users ORDER BY created_at DESC").all();
+  const users=db.prepare("SELECT id,name,email,role,is_active,created_at FROM users ORDER BY created_at DESC").all();
   res.json({users});
+});
+app.post("/api/admin/users", requireRole("admin"), (req,res) => {
+  const name=clean(req.body.name), email=clean(req.body.email).toLowerCase(), role=clean(req.body.role), password=String(req.body.password||"");
+  if (!name || !validEmail(email) || !["student","recruiter","admin"].includes(role) || password.length<8) return res.status(400).json({error:"Enter a name, valid email, role and password of at least 8 characters."});
+  try {
+    const info=db.prepare("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)").run(name,email,bcrypt.hashSync(password,10),role);
+    if (role==="student") db.prepare("INSERT INTO student_profiles(user_id) VALUES(?)").run(info.lastInsertRowid);
+    if (role==="recruiter") db.prepare("INSERT INTO recruiter_profiles(user_id) VALUES(?)").run(info.lastInsertRowid);
+    res.status(201).json({ok:true,id:info.lastInsertRowid});
+  } catch(e) { res.status(409).json({error:"An account with this email already exists."}); }
+});
+app.patch("/api/admin/users/:id", requireRole("admin"), (req,res) => {
+  const id=Number(req.params.id), existing=db.prepare("SELECT * FROM users WHERE id=?").get(id);
+  if (!existing) return res.status(404).json({error:"User not found."});
+  if (id===req.session.user.id && req.body.is_active===false) return res.status(400).json({error:"You cannot deactivate your own admin account."});
+  const name=req.body.name===undefined?existing.name:clean(req.body.name), email=req.body.email===undefined?existing.email:clean(req.body.email).toLowerCase(), role=req.body.role===undefined?existing.role:clean(req.body.role);
+  if (!name || !validEmail(email) || !["student","recruiter","admin"].includes(role)) return res.status(400).json({error:"Invalid name, email or role."});
+  if (req.body.password && String(req.body.password).length<8) return res.status(400).json({error:"New password must contain at least 8 characters."});
+  try {
+    db.prepare("UPDATE users SET name=?,email=?,role=?,is_active=? WHERE id=?").run(name,email,role,req.body.is_active===undefined?existing.is_active:(req.body.is_active?1:0),id);
+    if (role==="student") db.prepare("INSERT OR IGNORE INTO student_profiles(user_id) VALUES(?)").run(id);
+    if (role==="recruiter") db.prepare("INSERT OR IGNORE INTO recruiter_profiles(user_id) VALUES(?)").run(id);
+    if (req.body.password) db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(bcrypt.hashSync(String(req.body.password),10),id);
+    res.json({ok:true});
+  } catch(e) { res.status(409).json({error:"That email address is already in use."}); }
+});
+app.delete("/api/admin/users/:id", requireRole("admin"), (req,res) => {
+  const id=Number(req.params.id);
+  if (id===req.session.user.id) return res.status(400).json({error:"You cannot delete your own admin account."});
+  if (!db.prepare("SELECT id FROM users WHERE id=?").get(id)) return res.status(404).json({error:"User not found."});
+  const linked=db.prepare("SELECT (SELECT COUNT(*) FROM jobs WHERE recruiter_id=?)+(SELECT COUNT(*) FROM applications WHERE student_id=?)+(SELECT COUNT(*) FROM drives WHERE created_by=?) n").get(id,id,id).n;
+  if (linked) return res.status(409).json({error:"This account has recruitment records. Block it instead to preserve project history."});
+  db.prepare("DELETE FROM users WHERE id=?").run(id); res.json({ok:true});
 });
 app.get("/api/admin/drives", requireRole("admin"), (req,res) => res.json({drives:db.prepare("SELECT * FROM drives ORDER BY drive_date").all()}));
 app.post("/api/admin/drives", requireRole("admin"), (req,res) => {
